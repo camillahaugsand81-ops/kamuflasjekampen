@@ -1,0 +1,14 @@
+import express from 'express';
+import {createServer} from 'node:http';
+import {Server} from 'socket.io';
+const app=express(),server=createServer(app),io=new Server(server);app.use(express.static('public'));
+const rooms=new Map();const colors=['#66854b','#4c775e','#b6a17a','#8b6b50','#d2bd91'];
+function send(room){io.to(room.code).emit('state',{code:room.code,phase:room.phase,round:room.round,players:Object.values(room.players).map(({id,name,color,pattern,x,y,score,found})=>({id,name,color,pattern,x,y,score,found})),host:room.host,ends:room.ends});}
+function advance(r){if(r.timer)clearTimeout(r.timer);r.round++;r.phase='paint';r.ends=Date.now()+90000;Object.values(r.players).forEach(p=>{p.found=false;p.x=.1+Math.random()*.8;p.y=.2+Math.random()*.65;});send(r);r.timer=setTimeout(()=>{r.phase='hunt';r.ends=Date.now()+60000;send(r);r.timer=setTimeout(()=>{Object.values(r.players).forEach(p=>{if(!p.found)p.score+=3});r.phase='results';r.ends=null;send(r)},60000)},90000)}
+io.on('connection',s=>{s.on('join',({code,name,create},ack)=>{name=String(name||'Spiller').trim().slice(0,20);code=String(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6);if(!name)return ack({error:'Skriv et navn'});if(create){do{code=Math.random().toString(36).slice(2,7).toUpperCase()}while(rooms.has(code));rooms.set(code,{code,host:s.id,phase:'lobby',round:0,players:{},ends:null});}let r=rooms.get(code);if(!r)return ack({error:'Fant ikke rommet'});if(r.phase!=='lobby'&&r.phase!=='results')return ack({error:'Runden er i gang'});if(Object.keys(r.players).length>=30)return ack({error:'Rommet er fullt'});r.players[s.id]={id:s.id,name,color:colors[0],pattern:'spots',x:.5,y:.5,score:0,found:false};s.join(code);s.data.code=code;ack({code,id:s.id});send(r)});
+s.on('start',()=>{let r=rooms.get(s.data.code);if(r&&r.host===s.id&&(r.phase==='lobby'||r.phase==='results')&&Object.keys(r.players).length>=2)advance(r)});
+s.on('paint',({color,pattern})=>{let r=rooms.get(s.data.code),p=r?.players[s.id];if(!p||r.phase!=='paint')return;if(/^#[0-9a-fA-F]{6}$/.test(color))p.color=color;if(['spots','stripes','plain'].includes(pattern))p.pattern=pattern;send(r)});
+s.on('place',({x,y})=>{let r=rooms.get(s.data.code),p=r?.players[s.id];if(!p||r.phase!=='paint')return;p.x=Math.max(.05,Math.min(.9,Number(x)||.5));p.y=Math.max(.12,Math.min(.85,Number(y)||.5));send(r)});
+s.on('find',id=>{let r=rooms.get(s.data.code),p=r?.players[s.id],target=r?.players[id];if(r?.phase!=='hunt'||!p||!target||id===s.id||target.found)return;target.found=true;p.score+=2;send(r)});
+s.on('disconnect',()=>{let r=rooms.get(s.data.code);if(!r)return;delete r.players[s.id];if(!Object.keys(r.players).length){clearTimeout(r.timer);rooms.delete(r.code);return;}if(r.host===s.id)r.host=Object.keys(r.players)[0];send(r)})});
+server.listen(process.env.PORT||3000,()=>console.log('Kamuflasjekampen kjører'));
